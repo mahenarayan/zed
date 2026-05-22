@@ -2760,7 +2760,7 @@ impl ThreadView {
 
         let focus_handle = self.focus_handle(cx);
 
-        let card = self.render_tool_call(
+        let card = self.render_any_tool_call(
             &active_session_id,
             entry_ix,
             tool_call,
