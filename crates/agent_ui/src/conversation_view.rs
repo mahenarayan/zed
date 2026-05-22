@@ -349,10 +349,9 @@ impl Conversation {
             .collect()
     }
 
-    /// Returns the first pending tool call request for the given session and
-    /// the available permission options. Unlike `pending_tool_call`, this does
-    /// not fall back to other sessions when none are pending in the queried
-    /// one.
+    /// Returns the first pending tool call request for exactly `session_id`.
+    /// Unlike `pending_tool_call`, this does not use the global FIFO pending
+    /// request for non-subagent sessions.
     pub fn pending_tool_call_for_session<'a>(
         &'a self,
         session_id: &acp::SessionId,
