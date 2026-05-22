@@ -361,6 +361,22 @@ pub struct TurnFields {
     pub turn_tokens: Option<u64>,
 }
 
+/// How a tool call is rendered relative to its surroundings.
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum ToolCallLayout {
+    /// Inline in the thread list with outer chrome.
+    Standalone,
+    /// Hosted by a container that provides its own framing.
+    Embedded,
+}
+
+impl ToolCallLayout {
+    /// Whether the tool call should draw its own border/margin/location header.
+    fn has_outer_chrome(self) -> bool {
+        matches!(self, Self::Standalone)
+    }
+}
+
 impl ThreadView {
     pub(crate) fn new(
         root_thread_id: ThreadId,
@@ -2712,7 +2728,9 @@ impl ThreadView {
         )
     }
 
-    fn entry_is_offscreen(&self, entry_ix: usize) -> bool {
+    /// Returns true when the entry has been measured and sits entirely below
+    /// the current viewport.
+    fn entry_is_below_viewport(&self, entry_ix: usize) -> bool {
         self.list_state
             .bounds_for_item(entry_ix)
             .is_some_and(|entry_bounds| {
@@ -2738,7 +2756,7 @@ impl ThreadView {
         let thread = self.thread.read(cx);
         let (entry_ix, tool_call) = thread.tool_call(&tool_call_id)?;
 
-        if !self.entry_is_offscreen(entry_ix) {
+        if !self.entry_is_below_viewport(entry_ix) {
             return None;
         }
 
@@ -2749,8 +2767,7 @@ impl ThreadView {
             entry_ix,
             tool_call,
             &focus_handle,
-            true,
-            true,
+            ToolCallLayout::Embedded,
             window,
             cx,
         );
@@ -4917,8 +4934,7 @@ impl ThreadView {
                     entry_ix,
                     tool_call,
                     &self.focus_handle(cx),
-                    false,
-                    false,
+                    ToolCallLayout::Standalone,
                     window,
                     cx,
                 );
@@ -6119,7 +6135,7 @@ impl ThreadView {
         terminal: &Entity<acp_thread::Terminal>,
         tool_call: &ToolCall,
         focus_handle: &FocusHandle,
-        is_subagent: bool,
+        layout: ToolCallLayout,
         window: &Window,
         cx: &Context<Self>,
     ) -> AnyElement {
@@ -6336,7 +6352,7 @@ impl ThreadView {
             .and_then(|entry| entry.terminal(terminal));
 
         v_flex()
-            .when(!is_subagent, |this| {
+            .when(layout.has_outer_chrome(), |this| {
                 this.my_1p5()
                     .mx_5()
                     .border_1()
@@ -6421,8 +6437,7 @@ impl ThreadView {
         entry_ix: usize,
         tool_call: &ToolCall,
         focus_handle: &FocusHandle,
-        is_subagent: bool,
-        hide_raw_input: bool,
+        layout: ToolCallLayout,
         window: &Window,
         cx: &Context<Self>,
     ) -> Div {
@@ -6452,7 +6467,7 @@ impl ThreadView {
                         terminal,
                         tool_call,
                         focus_handle,
-                        is_subagent,
+                        layout,
                         window,
                         cx,
                     )
@@ -6463,8 +6478,7 @@ impl ThreadView {
                     entry_ix,
                     tool_call,
                     focus_handle,
-                    is_subagent,
-                    hide_raw_input,
+                    layout,
                     window,
                     cx,
                 ))
@@ -6478,8 +6492,7 @@ impl ThreadView {
         entry_ix: usize,
         tool_call: &ToolCall,
         focus_handle: &FocusHandle,
-        is_subagent: bool,
-        hide_raw_input: bool,
+        layout: ToolCallLayout,
         window: &Window,
         cx: &Context<Self>,
     ) -> Div {
@@ -6525,8 +6538,7 @@ impl ThreadView {
 
         is_open |= needs_confirmation;
 
-        let should_show_raw_input =
-            !is_terminal_tool && !is_edit && !has_image_content && !hide_raw_input;
+        let should_show_raw_input = !is_terminal_tool && !is_edit && !has_image_content;
 
         let input_output_header = |label: SharedString| {
             Label::new(label)
@@ -6728,7 +6740,7 @@ impl ThreadView {
 
         v_flex()
             .map(|this| {
-                if is_subagent {
+                if !layout.has_outer_chrome() {
                     this
                 } else if use_card_layout {
                     this.my_1p5()
@@ -6742,7 +6754,7 @@ impl ThreadView {
                     this.my_1()
                 }
             })
-            .when(!is_subagent, |this| {
+            .when(layout.has_outer_chrome(), |this| {
                 this.map(|this| {
                     if has_location && !use_card_layout {
                         this.ml_4()
@@ -7741,7 +7753,7 @@ impl ThreadView {
                 terminal,
                 tool_call,
                 focus_handle,
-                false,
+                ToolCallLayout::Standalone,
                 window,
                 cx,
             ),
@@ -8278,8 +8290,7 @@ impl ThreadView {
                                 entry_ix,
                                 tool_call,
                                 focus_handle,
-                                true,
-                                false,
+                                ToolCallLayout::Embedded,
                                 window,
                                 cx,
                             ))
