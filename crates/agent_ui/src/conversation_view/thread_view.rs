@@ -2276,7 +2276,13 @@ impl ThreadView {
 
         let main_agent_awaiting_permission = self.render_main_agent_awaiting_permission(window, cx);
         let has_main_agent_awaiting = main_agent_awaiting_permission.is_some();
-        let subagents_awaiting_permission = self.render_subagents_awaiting_permission(cx);
+
+        // If the main agent is awaiting permission, hide the subagents awaiting permission state.
+        let subagents_awaiting_permission = if has_main_agent_awaiting {
+            None
+        } else {
+            self.render_subagents_awaiting_permission(cx)
+        };
         let has_subagents_awaiting = subagents_awaiting_permission.is_some();
 
         if changed_buffers.is_empty()
@@ -2799,12 +2805,12 @@ impl ThreadView {
                     .child(
                         Label::new("Scroll to")
                             .size(LabelSize::Small)
-                            .color(Color::Accent),
+                            .color(Color::Default),
                     )
                     .child(
                         Icon::new(IconName::ArrowDown)
                             .size(IconSize::XSmall)
-                            .color(Color::Accent),
+                            .color(Color::Default),
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.list_state.scroll_to(ListOffset {
