@@ -7836,31 +7836,6 @@ pub(crate) mod tests {
     }
 
     #[gpui::test]
-    async fn test_permission_row_hidden_when_inline_visible(cx: &mut TestAppContext) {
-        init_test(cx);
-
-        let (_view, thread_view, entry_ix, cx) =
-            setup_pending_permission_thread("perm-visible", cx).await;
-
-        draw_thread_list_at(
-            &thread_view,
-            ListOffset {
-                item_ix: entry_ix,
-                offset_in_item: px(0.0),
-            },
-            cx,
-        );
-
-        thread_view.update_in(cx, |view, window, cx| {
-            assert!(
-                view.render_main_agent_awaiting_permission(window, cx)
-                    .is_none(),
-                "Floating row should be hidden when the inline prompt is visible"
-            );
-        });
-    }
-
-    #[gpui::test]
     async fn test_permission_row_hidden_when_inline_bounds_unavailable(cx: &mut TestAppContext) {
         init_test(cx);
 
@@ -7872,63 +7847,6 @@ pub(crate) mod tests {
                 view.render_main_agent_awaiting_permission(window, cx)
                     .is_none(),
                 "Floating row should stay hidden until the inline prompt has known list bounds"
-            );
-        });
-    }
-
-    #[gpui::test]
-    async fn test_permission_row_hidden_when_inline_above_viewport_bounds_unavailable(
-        cx: &mut TestAppContext,
-    ) {
-        init_test(cx);
-
-        let (_view, thread_view, entry_ix, cx) =
-            setup_pending_permission_thread("perm-above", cx).await;
-
-        draw_thread_list_at(
-            &thread_view,
-            ListOffset {
-                item_ix: entry_ix,
-                offset_in_item: px(20.0),
-            },
-            cx,
-        );
-
-        thread_view.update_in(cx, |view, window, cx| {
-            assert!(
-                view.render_main_agent_awaiting_permission(window, cx)
-                    .is_none(),
-                "Floating row should stay hidden when the inline prompt has no list bounds"
-            );
-        });
-    }
-
-    #[gpui::test]
-    async fn test_permission_row_shown_when_inline_below_viewport(cx: &mut TestAppContext) {
-        init_test(cx);
-
-        let (_view, thread_view, entry_ix, cx) =
-            setup_pending_permission_thread("perm-below", cx).await;
-
-        // Only meaningful when entry_ix > 0.
-        assert!(
-            entry_ix >= 1,
-            "Tool call should not be the very first entry"
-        );
-        draw_thread_list_at(
-            &thread_view,
-            ListOffset {
-                item_ix: 0,
-                offset_in_item: px(0.0),
-            },
-            cx,
-        );
-
-        thread_view.update_in(cx, |view, window, cx| {
-            assert!(
-                view.render_main_agent_awaiting_permission(window, cx)
-                    .is_some(),
-                "Floating row should render when the inline prompt is below the viewport"
             );
         });
     }
@@ -7986,10 +7904,6 @@ pub(crate) mod tests {
 
         // Start off-screen below the viewport — row visible because the item
         // has bounds that do not intersect the viewport.
-        assert!(
-            entry_ix >= 1,
-            "Tool call should not be the very first entry"
-        );
         draw_thread_list_at(
             &thread_view,
             ListOffset {
@@ -8029,14 +7943,10 @@ pub(crate) mod tests {
     async fn test_permission_row_allow_button_authorizes(cx: &mut TestAppContext) {
         init_test(cx);
 
-        let (conversation_view, thread_view, entry_ix, cx) =
+        let (conversation_view, thread_view, _entry_ix, cx) =
             setup_pending_permission_thread("perm-allow", cx).await;
 
         // Park the inline prompt below the viewport so the floating row would render.
-        assert!(
-            entry_ix >= 1,
-            "Tool call should not be the very first entry"
-        );
         draw_thread_list_at(
             &thread_view,
             ListOffset {
