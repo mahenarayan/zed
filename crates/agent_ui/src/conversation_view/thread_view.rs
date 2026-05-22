@@ -2258,7 +2258,7 @@ impl ThreadView {
         let plan = thread.plan();
         let queue_is_empty = !self.has_queued_messages();
 
-        let main_agent_awaiting_permission = self.render_main_agent_awaiting_permission(cx);
+        let main_agent_awaiting_permission = self.render_main_agent_awaiting_permission(window, cx);
         let has_main_agent_awaiting = main_agent_awaiting_permission.is_some();
         let subagents_awaiting_permission = self.render_subagents_awaiting_permission(cx);
         let has_subagents_awaiting = subagents_awaiting_permission.is_some();
@@ -2722,6 +2722,7 @@ impl ThreadView {
 
     pub(crate) fn render_main_agent_awaiting_permission(
         &self,
+        window: &Window,
         cx: &Context<Self>,
     ) -> Option<AnyElement> {
         if self.is_subagent() {
@@ -2729,56 +2730,28 @@ impl ThreadView {
         }
 
         let active_session_id = self.thread.read(cx).session_id().clone();
-        let conversation = self.conversation.read(cx);
-        let (pending_session_id, pending_tool_call_id, options) =
-            conversation.pending_tool_call(&active_session_id, cx)?;
+        let (tool_call_id, _options) = self
+            .conversation
+            .read(cx)
+            .pending_tool_call_for_session(&active_session_id, cx)?;
 
-        let pending_thread = conversation.thread_for_session(&pending_session_id)?;
-        if pending_thread.read(cx).parent_session_id().is_some() {
+        let thread = self.thread.read(cx);
+        let (entry_ix, tool_call) = thread.tool_call(&tool_call_id)?;
+
+        if !self.entry_is_offscreen(entry_ix) {
             return None;
         }
-
-        let tool_call_id = pending_tool_call_id;
-        let session_id = pending_session_id.clone();
-        let pending_thread = pending_thread.clone();
-        let total_pending = conversation.main_agent_pending_permission_count(cx);
-
-        let pending_thread_ref = pending_thread.read(cx);
-        let (entry_ix_in_pending_thread, pending_tool_call) =
-            pending_thread_ref.tool_call(&tool_call_id)?;
-
-        let is_same_thread = session_id == active_session_id;
-        let entry_ix_in_active = if is_same_thread {
-            Some(entry_ix_in_pending_thread)
-        } else {
-            None
-        };
-
-        if let Some(entry_ix) = entry_ix_in_active
-            && !self.entry_is_offscreen(entry_ix)
-        {
-            return None;
-        }
-
-        let label_text = pending_tool_call.label.read(cx).source().to_string();
-        let label: SharedString = if label_text.is_empty() {
-            "Tool call".into()
-        } else {
-            label_text.into()
-        };
 
         let focus_handle = self.focus_handle(cx);
-        let is_first = is_same_thread;
 
-        let entry_ix_for_buttons = entry_ix_in_pending_thread;
-
-        let permission_buttons = self.render_permission_buttons(
-            session_id,
-            is_first,
-            options,
-            entry_ix_for_buttons,
-            tool_call_id,
+        let card = self.render_tool_call(
+            &active_session_id,
+            entry_ix,
+            tool_call,
             &focus_handle,
+            true,
+            true,
+            window,
             cx,
         );
 
@@ -2786,66 +2759,46 @@ impl ThreadView {
             .py_1()
             .px_2()
             .w_full()
-            .gap_1()
+            .gap_1p5()
             .border_b_1()
             .border_color(cx.theme().colors().border)
             .child(
-                Label::new("Awaiting Permission:")
+                h_flex()
+                    .w_2()
+                    .justify_center()
+                    .child(GeneratingSpinnerElement::new(SpinnerVariant::Sand)),
+            )
+            .child(
+                LoadingLabel::new("Awaiting Confirmation")
                     .size(LabelSize::Small)
                     .color(Color::Muted),
             )
-            .child(Label::new(label).size(LabelSize::Small).truncate())
-            .when(total_pending > 1, |this| {
-                this.child(div().flex_1()).child(
-                    Label::new(format!("1 of {}", total_pending))
-                        .size(LabelSize::Small)
-                        .color(Color::Muted),
-                )
-            });
-
-        let scroll_target_ix = entry_ix_in_active;
-        let group = "main-agent-permission-row".to_string();
-        let body = h_flex()
-            .group(&group)
-            .p_1()
-            .pl_2()
-            .w_full()
-            .min_w_0()
-            .gap_1()
-            .justify_between()
+            .child(div().flex_1())
             .child(
                 h_flex()
-                    .gap_1p5()
+                    .id("main-agent-permission-scroll-to")
+                    .cursor_pointer()
+                    .gap_0p5()
                     .child(
-                        Icon::new(IconName::Warning)
-                            .size(IconSize::XSmall)
-                            .color(Color::Warning),
+                        Label::new("Scroll to")
+                            .size(LabelSize::Small)
+                            .color(Color::Accent),
                     )
-                    .child(permission_buttons),
-            )
-            .when_some(scroll_target_ix, |this, entry_ix| {
-                this.child(
-                    div()
-                        .id("main-agent-permission-scroll-to")
-                        .cursor_pointer()
-                        .visible_on_hover(&group)
-                        .child(
-                            Label::new("Scroll to")
-                                .size(LabelSize::Small)
-                                .color(Color::Muted)
-                                .truncate(),
-                        )
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.list_state.scroll_to(ListOffset {
-                                item_ix: entry_ix,
-                                offset_in_item: px(0.0),
-                            });
-                            cx.notify();
-                        })),
-                )
-            });
+                    .child(
+                        Icon::new(IconName::ArrowDown)
+                            .size(IconSize::XSmall)
+                            .color(Color::Accent),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.list_state.scroll_to(ListOffset {
+                            item_ix: entry_ix,
+                            offset_in_item: px(0.0),
+                        });
+                        cx.notify();
+                    })),
+            );
 
-        Some(v_flex().child(header).child(body).into_any())
+        Some(v_flex().child(header).child(card).into_any())
     }
 
     fn render_message_queue_summary(
@@ -4965,6 +4918,7 @@ impl ThreadView {
                     tool_call,
                     &self.focus_handle(cx),
                     false,
+                    false,
                     window,
                     cx,
                 );
@@ -6468,6 +6422,7 @@ impl ThreadView {
         tool_call: &ToolCall,
         focus_handle: &FocusHandle,
         is_subagent: bool,
+        hide_raw_input: bool,
         window: &Window,
         cx: &Context<Self>,
     ) -> Div {
@@ -6509,6 +6464,7 @@ impl ThreadView {
                     tool_call,
                     focus_handle,
                     is_subagent,
+                    hide_raw_input,
                     window,
                     cx,
                 ))
@@ -6523,6 +6479,7 @@ impl ThreadView {
         tool_call: &ToolCall,
         focus_handle: &FocusHandle,
         is_subagent: bool,
+        hide_raw_input: bool,
         window: &Window,
         cx: &Context<Self>,
     ) -> Div {
@@ -6568,7 +6525,8 @@ impl ThreadView {
 
         is_open |= needs_confirmation;
 
-        let should_show_raw_input = !is_terminal_tool && !is_edit && !has_image_content;
+        let should_show_raw_input =
+            !is_terminal_tool && !is_edit && !has_image_content && !hide_raw_input;
 
         let input_output_header = |label: SharedString| {
             Label::new(label)
@@ -8321,6 +8279,7 @@ impl ThreadView {
                                 tool_call,
                                 focus_handle,
                                 true,
+                                false,
                                 window,
                                 cx,
                             ))

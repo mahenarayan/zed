@@ -349,22 +349,22 @@ impl Conversation {
             .collect()
     }
 
-    pub fn thread_for_session(&self, session_id: &acp::SessionId) -> Option<&Entity<AcpThread>> {
-        self.threads.get(session_id)
-    }
-
-    pub fn main_agent_pending_permission_count(&self, cx: &App) -> usize {
-        self.permission_requests
-            .iter()
-            .filter_map(|(session_id, tool_call_ids)| {
-                let thread = self.threads.get(session_id)?;
-                if thread.read(cx).parent_session_id().is_none() {
-                    Some(tool_call_ids.len())
-                } else {
-                    None
-                }
-            })
-            .sum()
+    /// Returns the first pending tool call request for the given session and
+    /// the available permission options. Unlike `pending_tool_call`, this does
+    /// not fall back to other sessions when none are pending in the queried
+    /// one.
+    pub fn pending_tool_call_for_session<'a>(
+        &'a self,
+        session_id: &acp::SessionId,
+        cx: &'a App,
+    ) -> Option<(acp::ToolCallId, &'a PermissionOptions)> {
+        let thread = self.threads.get(session_id)?;
+        let tool_call_id = self.permission_requests.get(session_id)?.iter().next()?;
+        let (_, tool_call) = thread.read(cx).tool_call(tool_call_id)?;
+        let ToolCallStatus::WaitingForConfirmation { options, .. } = &tool_call.status else {
+            return None;
+        };
+        Some((tool_call_id.clone(), options))
     }
 
     pub fn authorize_pending_tool_call(
@@ -7852,9 +7852,10 @@ pub(crate) mod tests {
             cx,
         );
 
-        thread_view.update(cx, |view, cx| {
+        thread_view.update_in(cx, |view, window, cx| {
             assert!(
-                view.render_main_agent_awaiting_permission(cx).is_none(),
+                view.render_main_agent_awaiting_permission(window, cx)
+                    .is_none(),
                 "Floating row should be hidden when the inline prompt is visible"
             );
         });
@@ -7867,9 +7868,10 @@ pub(crate) mod tests {
         let (_view, thread_view, _entry_ix, cx) =
             setup_pending_permission_thread("perm-no-bounds", cx).await;
 
-        thread_view.update(cx, |view, cx| {
+        thread_view.update_in(cx, |view, window, cx| {
             assert!(
-                view.render_main_agent_awaiting_permission(cx).is_none(),
+                view.render_main_agent_awaiting_permission(window, cx)
+                    .is_none(),
                 "Floating row should stay hidden until the inline prompt has known list bounds"
             );
         });
@@ -7893,9 +7895,10 @@ pub(crate) mod tests {
             cx,
         );
 
-        thread_view.update(cx, |view, cx| {
+        thread_view.update_in(cx, |view, window, cx| {
             assert!(
-                view.render_main_agent_awaiting_permission(cx).is_none(),
+                view.render_main_agent_awaiting_permission(window, cx)
+                    .is_none(),
                 "Floating row should stay hidden when the inline prompt has no list bounds"
             );
         });
@@ -7922,16 +7925,17 @@ pub(crate) mod tests {
             cx,
         );
 
-        thread_view.update(cx, |view, cx| {
+        thread_view.update_in(cx, |view, window, cx| {
             assert!(
-                view.render_main_agent_awaiting_permission(cx).is_some(),
+                view.render_main_agent_awaiting_permission(window, cx)
+                    .is_some(),
                 "Floating row should render when the inline prompt is below the viewport"
             );
         });
     }
 
     #[gpui::test]
-    async fn test_permission_row_shows_count_when_multiple_pending(cx: &mut TestAppContext) {
+    async fn test_pending_tool_call_for_session_scopes_to_that_session(cx: &mut TestAppContext) {
         init_test(cx);
 
         let fs = FakeFs::new(cx.executor());
@@ -7939,6 +7943,7 @@ pub(crate) mod tests {
         let connection: Rc<dyn AgentConnection> = Rc::new(StubAgentConnection::new());
 
         let session_id_a = acp::SessionId::new("thread-a");
+        let session_id_b = acp::SessionId::new("thread-b");
         let (thread_a, thread_b, conversation) = cx.update(|cx| {
             let thread_a =
                 create_test_acp_thread(None, "thread-a", connection.clone(), project.clone(), cx);
@@ -7953,27 +7958,23 @@ pub(crate) mod tests {
             (thread_a, thread_b, conversation)
         });
 
+        // Pending tool calls in both threads. Unlike `pending_tool_call`,
+        // `pending_tool_call_for_session` must not fall back across threads.
         let _task_a = request_test_tool_authorization(&thread_a, "tc-a", "allow-a", cx);
         let _task_b = request_test_tool_authorization(&thread_b, "tc-b", "allow-b", cx);
 
         cx.read(|cx| {
-            assert_eq!(
-                conversation
-                    .read(cx)
-                    .main_agent_pending_permission_count(cx),
-                2,
-                "Expected two main-agent pending permission requests"
-            );
-
-            let (returned_session_id, tool_call_id, _) = conversation
+            let (tool_call_id_a, _) = conversation
                 .read(cx)
-                .pending_tool_call(&session_id_a, cx)
-                .expect("Expected a pending tool call");
-            assert_eq!(
-                returned_session_id, session_id_a,
-                "FIFO-first request should belong to thread-a"
-            );
-            assert_eq!(tool_call_id, acp::ToolCallId::new("tc-a"));
+                .pending_tool_call_for_session(&session_id_a, cx)
+                .expect("Expected a pending tool call in thread A");
+            assert_eq!(tool_call_id_a, acp::ToolCallId::new("tc-a"));
+
+            let (tool_call_id_b, _) = conversation
+                .read(cx)
+                .pending_tool_call_for_session(&session_id_b, cx)
+                .expect("Expected a pending tool call in thread B");
+            assert_eq!(tool_call_id_b, acp::ToolCallId::new("tc-b"));
         });
     }
 
@@ -7998,8 +7999,11 @@ pub(crate) mod tests {
             },
             cx,
         );
-        thread_view.update(cx, |view, cx| {
-            assert!(view.render_main_agent_awaiting_permission(cx).is_some());
+        thread_view.update_in(cx, |view, window, cx| {
+            assert!(
+                view.render_main_agent_awaiting_permission(window, cx)
+                    .is_some()
+            );
         });
 
         // Simulate clicking "Scroll to": the list scrolls to the entry and the
@@ -8013,9 +8017,10 @@ pub(crate) mod tests {
             cx,
         );
 
-        thread_view.update(cx, |view, cx| {
+        thread_view.update_in(cx, |view, window, cx| {
             assert!(
-                view.render_main_agent_awaiting_permission(cx).is_none(),
+                view.render_main_agent_awaiting_permission(window, cx)
+                    .is_none(),
                 "Floating row should disappear after scrolling brings the inline prompt into view"
             );
         });
@@ -8041,9 +8046,10 @@ pub(crate) mod tests {
             },
             cx,
         );
-        thread_view.update(cx, |view, cx| {
+        thread_view.update_in(cx, |view, window, cx| {
             assert!(
-                view.render_main_agent_awaiting_permission(cx).is_some(),
+                view.render_main_agent_awaiting_permission(window, cx)
+                    .is_some(),
                 "Precondition: floating row should be visible"
             );
         });
@@ -8069,9 +8075,10 @@ pub(crate) mod tests {
                 "Tool call should no longer be pending after Allow is clicked"
             );
         });
-        thread_view.update(cx, |view, cx| {
+        thread_view.update_in(cx, |view, window, cx| {
             assert!(
-                view.render_main_agent_awaiting_permission(cx).is_none(),
+                view.render_main_agent_awaiting_permission(window, cx)
+                    .is_none(),
                 "Floating row should disappear once the permission is granted"
             );
         });
@@ -8121,12 +8128,12 @@ pub(crate) mod tests {
         cx.run_until_parked();
 
         cx.read(|cx| {
-            assert_eq!(
+            assert!(
                 conversation
                     .read(cx)
-                    .main_agent_pending_permission_count(cx),
-                0,
-                "Subagent requests must not count toward main-agent pending permissions"
+                    .pending_tool_call_for_session(&parent_session_id, cx)
+                    .is_none(),
+                "Subagent requests must not surface as pending in the parent session"
             );
             assert!(
                 !conversation
@@ -8137,9 +8144,10 @@ pub(crate) mod tests {
             );
         });
 
-        thread_view.update(cx, |view, cx| {
+        thread_view.update_in(cx, |view, window, cx| {
             assert!(
-                view.render_main_agent_awaiting_permission(cx).is_none(),
+                view.render_main_agent_awaiting_permission(window, cx)
+                    .is_none(),
                 "Subagent permission requests should not trigger the main-agent floating row"
             );
         });
